@@ -24,7 +24,11 @@ const crawlerBookInfo = async () =>{
             waitUntil : 'networkidle0' // 로딩 완료될때까지 기다리기 
         });// 알라딘 컴퓨터 공학 책 사이트  
         
-        let result = [];
+        let result = new Map();
+        result.set('bookInfo',[]);
+        result.set('aladin',[]);
+        result.set('kb',[]);
+        result.set('yes',[]);
         await page.waitForSelector('.bo');
         const bookHrefs = await page.evaluate(()=>{   
             const list = Array.from(document.querySelectorAll('.bo')).map(v=> {return {title : v.textContent, href : v.href}});
@@ -39,7 +43,8 @@ const crawlerBookInfo = async () =>{
                 waitUntil : 'networkidle0' // 로딩 완료될때까지 기다리기 
             });
             const title = val.title;
-            console.log(`title ${title}`)
+            console.log(`title ${title}`);
+            let isbn = '';
 
             const bookInfo = await page.evaluate(()=>{
                 // 알라딘에서 컴퓨터 공학 bestseller 도서들 정보 가지고오기 
@@ -49,7 +54,7 @@ const crawlerBookInfo = async () =>{
                 const point = document.querySelector('.Ere_sub_pink.Ere_fs16.Ere_str') && document.querySelector('.Ere_sub_pink.Ere_fs16.Ere_str').textContent;
                 const price = document.querySelector('.info_list:first-child ul li:first-child .Ritem') && document.querySelector('.info_list:first-child ul li:first-child .Ritem').textContent.replace('원','').replace(',','').replace(/ /gi,"");
                 const discontPrice = document.querySelector('.Ritem.Ere_ht11 span') && document.querySelector('.Ritem.Ere_ht11 span').textContent;
-                const isbn = document.querySelector('.conts_info_list1 li:last-child')
+                isbn = document.querySelector('.conts_info_list1 li:last-child')
                     && document.querySelector('.conts_info_list1 li:last-child').textContent.includes("ISBN") && document.querySelector('.conts_info_list1 li:last-child').textContent.replace('ISBN','').replace(':','').replace(/ /gi,'');
                 return {
                     subTitle,
@@ -70,11 +75,13 @@ const crawlerBookInfo = async () =>{
                     responseType : 'arraybuffer',
                 });
                 fs.writeFileSync(`bookimg/${bookInfo.title.replace(/\//gi,"_").replace(/ /gi,"_")}.jpg`);
+                bookInfo.img = bookInfo.title.replace(/\//gi,"_").replace(/ /gi,"_");
             }
             // 도서 정보와 이미지 db에 저장 
             // 교보문고에서 해당 도서 검색, 가격&포인트 확인 + yes24도 동일 
-            result.push(bookInfo);
-            console.log(`bookInfo ${bookInfo}`)
+            console.log(`bookInfo ${bookInfo}`);
+            result.get('bookInfo').push(bookInfo);
+            result.get('aladin').push({point:bookInfo.point, discountPrice : bookInfo.discountPrice});
 
             await pageYes.goto(`http://www.yes24.com/searchcorner/Search?query=${bookInfo.isbn}`);
             await pageYes.waitForSelector('.goods_img:first-child>a');
@@ -88,10 +95,12 @@ const crawlerBookInfo = async () =>{
                 const discountPrice = document.querySelector('.nor_price .yes_m') && Number(document.querySelector('.nor_price .yes_m').textContent.replace(',',''));
                 return {
                     point,
-                    discountPrice
+                    discountPrice,
+                    isbn: isbn
                 }
             });
             console.log(`yes ${yesBookInfo}`);
+            result.get('yes').push(yesBookInfo);
 
             await pageKb.goto(`http://www.kyobobook.co.kr/product/detailViewKor.laf?barcode=${bookInfo.isbn}`);
             await pageKb.waitForSelector('.box_detail_point');
@@ -101,27 +110,51 @@ const crawlerBookInfo = async () =>{
                 const discountPrice = document.querySelector('.sell_price strong') && Number(document.querySelector('.sell_price strong').textContent);
                 return {
                     point, 
-                    discountPrice
+                    discountPrice,
+                    isbn: isbn
                 }
             });
+            result.get('kb').push(kbBookInfo);
             console.log(`kb ${kbBookInfo}`);
-            result.push(bookInfo);
         }
 
-        await Promise.all(result.map(v=>{
-            return db.BookInfo.create({
-                isbn : v.isbn,
-                author : v.author,
-                title : v.title,
-                subTitle : v.subTitle,
-                price : v.price,
-                // img
-            });
-        }));
+        await Promise.all([
+            result.get('bookInfo').map(v=>{
+                return db.BookInfo.create({
+                    isbn : v.isbn,
+                    author : v.author,
+                    title : v.title,
+                    subTitle : v.subTitle,
+                    price : v.price,
+                    img : v.img
+                });
+            }),          
 
+            result.get('yes').map(v=>{
+                return db.BookYes.create({
+                    point : v.point,
+                    discountPrice : v.discountPrice,
+                    isbn : isbn
+                });
+            }),
+
+            result.get('kb').map(v=>{
+                return db.BookKb.create({
+                    point : v.point,
+                    discountPrice : v.discountPrice,
+                    isbn : isbn
+                });
+            }),
+            result.get('bookInfo').map(v=>{
+                return db.BookAladin.create({
+                    point : v.point,
+                    discountPrice : v.discountPrice,
+                    isbn : isbn
+                });
+            }),
+
+        ]);
         
-
-
         await pageYes.close();
         await pageKb.close();
         await page.close();
